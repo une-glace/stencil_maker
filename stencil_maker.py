@@ -2,11 +2,12 @@ import cv2
 import numpy as np
 import os
 import math
+import ezdxf
 
 # 配置参数
 INPUT_FILE = 'ori.png'
-OUTPUT_DIR = 'stencil_output'
-TARGET_SIZE_CM = (150, 150)
+OUTPUT_DIR = 'stencil_output_50cm'
+TARGET_SIZE_CM = (50, 50)
 CHUNK_SIZE_CM = (50, 50)  # 单个切片/纸张大小
 DPI = 72  # 打印分辨率
 
@@ -41,6 +42,52 @@ def sort_colors_by_brightness(centers):
     # 计算亮度: 0.299*R + 0.587*G + 0.114*B (注意 OpenCV 是 BGR)
     brightness = np.sum(centers * np.array([0.114, 0.587, 0.299]), axis=1)
     return np.argsort(brightness)[::-1] # 从亮到暗
+
+def save_dxf(image, filename, size_cm):
+    """
+    将二值图像(mask)转换为DXF轮廓
+    image: 0=黑色(挖空区域), 255=白色(保留区域)
+    """
+    # 翻转：让需要挖空的部分(0)变成白色(255)，以便 findContours 提取轮廓
+    contours_img = 255 - image 
+    
+    # 查找轮廓
+    # RETR_CCOMP 建立两层结构（外轮廓和孔洞）
+    # CHAIN_APPROX_SIMPLE 压缩水平/垂直/对角线段
+    contours, _ = cv2.findContours(contours_img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    
+    doc = ezdxf.new('R2010')
+    doc.units = ezdxf.units.MM
+    msp = doc.modelspace()
+    
+    h_px, w_px = image.shape[:2]
+    # 物理尺寸转换为毫米
+    w_mm = size_cm[0] * 10
+    h_mm = size_cm[1] * 10
+    
+    # 计算缩放比例
+    scale_x = w_mm / w_px
+    scale_y = h_mm / h_px
+    
+    for contour in contours:
+        # contour is shape (N, 1, 2) -> (x, y)
+        points = []
+        for point in contour:
+            px, py = point[0]
+            # 坐标转换：
+            # 图像坐标系: (0,0)左上角, y向下
+            # DXF坐标系: (0,0)左下角, y向上
+            # 转换: y_dxf = h_mm - y_px * scale
+            
+            x_mm = px * scale_x
+            y_mm = h_mm - (py * scale_y)
+            points.append((x_mm, y_mm))
+        
+        # 闭合轮廓
+        if len(points) > 2:
+             msp.add_lwpolyline(points, close=True)
+             
+    doc.saveas(filename)
 
 def save_layer_image(layer_img, layer_name):
     """保存图层图像，如果尺寸超过 CHUNK_SIZE_CM 则自动切片"""
@@ -97,6 +144,12 @@ def save_layer_image(layer_img, layer_name):
             cv2.putText(img_color, f"Size: 50cm x 50cm", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
             
             cv2.imwrite(save_path, img_color)
+            
+            # 保存 DXF 文件
+            dxf_filename = f"{layer_name}_R{r+1}_C{c+1}.dxf"
+            dxf_save_path = os.path.join(layer_dir, dxf_filename)
+            save_dxf(chunk, dxf_save_path, CHUNK_SIZE_CM)
+
             # print(f"  已保存: {filename}")
 
 def main():
