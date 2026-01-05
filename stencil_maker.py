@@ -6,11 +6,10 @@ import math
 # 配置参数
 INPUT_FILE = 'ori.png'
 OUTPUT_DIR = 'stencil_output'
-TARGET_SIZE_CM = (150, 150)  # 1.5m x 1.5m
+TARGET_SIZE_CM = (150, 150)
+CHUNK_SIZE_CM = (50, 50)  # 单个切片/纸张大小
 DPI = 72  # 打印分辨率
-# A4 纸张像素尺寸 (at 72 DPI)
-A4_WIDTH_PX = int(21.0 / 2.54 * DPI)
-A4_HEIGHT_PX = int(29.7 / 2.54 * DPI)
+
 NUM_CLUSTERS = 6  # 颜色数量：增加到6层以获得更细腻的过渡
 
 def create_test_image():
@@ -43,67 +42,62 @@ def sort_colors_by_brightness(centers):
     brightness = np.sum(centers * np.array([0.114, 0.587, 0.299]), axis=1)
     return np.argsort(brightness)[::-1] # 从亮到暗
 
-def slice_and_save(layer_img, layer_name, scale_factor=1.0):
-    """将大图切分为 A4 大小的块"""
-    h, w = layer_img.shape
-    
-    # 打印时，我们需要让图像的物理尺寸对应 1.5m
-    # 现在的像素 w, h 对应 150cm
-    # 计算需要多少张 A4 纸
-    # A4 宽约 21cm, 高 29.7cm (减去页边距，有效区域按 19x27算比较安全)
-    
-    # 为了简化，我们假设 user 打印时选择 "100% 缩放" 或 "海报打印"
-    # 这里我们直接把图片切成小块保存
-    
-    # 计算行数和列数
-    # 150cm / 19cm = ~7.8 -> 8张
-    effective_w_cm = 19.0
-    effective_h_cm = 27.7
-    
-    pixels_per_cm = w / 150.0
-    
-    chunk_w = int(effective_w_cm * pixels_per_cm)
-    chunk_h = int(effective_h_cm * pixels_per_cm)
-    
-    rows = math.ceil(h / chunk_h)
-    cols = math.ceil(w / chunk_w)
-    
+def save_layer_image(layer_img, layer_name):
+    """保存图层图像，如果尺寸超过 CHUNK_SIZE_CM 则自动切片"""
     layer_dir = os.path.join(OUTPUT_DIR, layer_name)
     ensure_directory(layer_dir)
     
-    print(f"正在切片 {layer_name}: {rows}行 x {cols}列 ...")
+    h, w = layer_img.shape[:2]
     
-    for r in range(rows):
-        for c in range(cols):
-            x1 = c * chunk_w
-            y1 = r * chunk_h
-            x2 = min(x1 + chunk_w, w)
-            y2 = min(y1 + chunk_h, h)
-            
-            chunk = layer_img[y1:y2, x1:x2]
-            
-            # 增加白色边框方便粘贴，或者直接保存内容
-            # 这里为了省墨，背景是白的，内容是黑的
-            # 注意：传入的 layer_img 已经是黑底白字还是白底黑字？
-            # 通常模板：黑色是需要挖空的地方。打印时：黑色费墨。
-            # 建议：打印出轮廓线（节省墨水）或者 灰色填充。
-            # 这里直接保存二值化图（黑=墨水=挖空）。
-            
-            # 如果这块是全白的（不需要挖），可以跳过，但为了拼接完整最好保留
-            if np.mean(chunk) == 255: 
-                # 全白，甚至可以不打印，但为了编号方便还是存一下
-                pass
+    # 计算像素密度
+    # 假设图像已经按照 TARGET_SIZE_CM 缩放好了
+    # 使用 float 避免整除误差
+    pixels_per_cm_w = w / TARGET_SIZE_CM[0]
+    pixels_per_cm_h = h / TARGET_SIZE_CM[1]
+    
+    # 计算切片像素大小
+    chunk_px_w = int(CHUNK_SIZE_CM[0] * pixels_per_cm_w)
+    chunk_px_h = int(CHUNK_SIZE_CM[1] * pixels_per_cm_h)
+    
+    # 计算需要切多少行多少列
+    # 使用 ceil 向上取整，确保覆盖全图
+    n_cols = math.ceil(w / chunk_px_w)
+    n_rows = math.ceil(h / chunk_px_h)
+    
+    print(f"图层 {layer_name}: 总尺寸 {w}x{h} px, 切片大小 {chunk_px_w}x{chunk_px_h} px, 切分为 {n_rows}x{n_cols}={n_rows*n_cols} 张")
 
-            # 添加文件名编号
+    for r in range(n_rows):
+        for c in range(n_cols):
+            # 计算当前切片的坐标范围
+            x_start = c * chunk_px_w
+            y_start = r * chunk_px_h
+            x_end = min(x_start + chunk_px_w, w)
+            y_end = min(y_start + chunk_px_h, h)
+            
+            # 裁剪图像
+            chunk = layer_img[y_start:y_end, x_start:x_end]
+            
+            # 如果切出来的图是空的（理论上不会），跳过
+            if chunk.size == 0:
+                continue
+
+            # 构造文件名: LayerName_Row_Col.png
+            # 为了方便排序，使用 01, 02 格式
             filename = f"{layer_name}_R{r+1}_C{c+1}.png"
+            save_path = os.path.join(layer_dir, filename)
             
-            # 加上边框和编号文字方便拼接
-            chunk_with_border = cv2.copyMakeBorder(chunk, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=128)
-            # 转彩色以便写红字
-            chunk_color = cv2.cvtColor(chunk_with_border, cv2.COLOR_GRAY2BGR)
-            cv2.putText(chunk_color, f"{layer_name} [{r+1},{c+1}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            # 增加白色边框方便打印/粘贴
+            chunk_with_border = cv2.copyMakeBorder(chunk, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
             
-            cv2.imwrite(os.path.join(layer_dir, filename), chunk_color)
+            # 添加辅助信息文字
+            img_color = cv2.cvtColor(chunk_with_border, cv2.COLOR_GRAY2BGR)
+            
+            info_text = f"{layer_name} | Row {r+1}/{n_rows} Col {c+1}/{n_cols}"
+            cv2.putText(img_color, info_text, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            cv2.putText(img_color, f"Size: 50cm x 50cm", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+            
+            cv2.imwrite(save_path, img_color)
+            # print(f"  已保存: {filename}")
 
 def main():
     if not os.path.exists(INPUT_FILE):
@@ -116,9 +110,9 @@ def main():
         return
 
     # 1. 调整大小
-    # 目标尺寸 150cm，按 20 px/cm (约50dpi) 计算 -> 3000px
+    # 目标尺寸按 20 px/cm (约50dpi) 计算
     # 这样既保证细节又不会太大
-    target_px = 3000
+    target_px = int(max(TARGET_SIZE_CM) * 20)
     h, w = img.shape[:2]
     scale = target_px / max(h, w)
     new_w, new_h = int(w * scale), int(h * scale)
@@ -207,9 +201,9 @@ def main():
         
         # 切片
         # 这里我们切片保存 mask (实心黑块)，方便用户看哪里要挖
-        slice_and_save(mask, layer_name)
+        save_layer_image(mask, layer_name)
         
-    print("处理完成！请查看 stencil_output 文件夹。")
+    print(f"处理完成！请查看 {OUTPUT_DIR} 文件夹。")
 
 if __name__ == '__main__':
     main()
