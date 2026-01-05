@@ -7,11 +7,11 @@ import math
 INPUT_FILE = 'ori.png'
 OUTPUT_DIR = 'stencil_output'
 TARGET_SIZE_CM = (150, 150)  # 1.5m x 1.5m
-DPI = 72  # 打印分辨率，72dpi对于大尺寸涂鸦模板足够，甚至可以更低，方便处理
+DPI = 72  # 打印分辨率
 # A4 纸张像素尺寸 (at 72 DPI)
 A4_WIDTH_PX = int(21.0 / 2.54 * DPI)
 A4_HEIGHT_PX = int(29.7 / 2.54 * DPI)
-NUM_CLUSTERS = 4  # 颜色数量：背景黄，浅灰，深灰，黑
+NUM_CLUSTERS = 6  # 颜色数量：增加到6层以获得更细腻的过渡
 
 def create_test_image():
     """创建一个测试图片，如果原图不存在"""
@@ -153,7 +153,14 @@ def main():
     #   Step 3: 刷黑色 (Color 3) -> 模板是 (Color 3) 的区域
     # 这样可以保证边缘严丝合缝，不会漏底。
     
-    layer_names = ['0_Background_Yellow', '1_LightGrey', '2_DarkGrey', '3_Black']
+    layer_names = [
+        '0_Background_Yellow', 
+        '1_HighLightGrey', 
+        '2_LightGrey', 
+        '3_MediumGrey', 
+        '4_DarkGrey', 
+        '5_Black'
+    ]
     
     print("开始分层处理...")
     
